@@ -70,6 +70,7 @@ typedef struct {
     __IO uint32_t ICR; __IO uint32_t RDR; __IO uint32_t TDR; __IO uint32_t PRESC;
 } USART_TypeDef;
 #define USART2 ((USART_TypeDef *)(APB1PERIPH_BASE + 0x4400UL))  /* PA2/PA3 -> ST-LINK VCP */
+#define LPUART1 ((USART_TypeDef *)0x40008000UL)
 
 /* ---- SysTick (Cortex-M4 SCB) ---- */
 typedef struct {
