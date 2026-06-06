@@ -125,7 +125,6 @@ link.ld	Linker script (512K flash, 128K RAM)
 flash.sh	Build + flash script
 WIRING.md	Full hardware wiring guide
 THRESHOLDS.md	Evidence-based threshold justifications
-
 🔁 How to Use
 Wire up hardware per WIRING.md
 Flash firmware with ./flash.sh
