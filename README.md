@@ -57,6 +57,36 @@ good-posture baseline, and the device continuously monitors:
 > Full justification in [`THRESHOLDS.md`](./THRESHOLDS.md)
 
 ---
+## 🌱 Sustainability
+
+Smart Desk Coach is designed with sustainability in mind — both human and environmental.
+
+### 🧍 Human Health
+Prolonged sedentary behaviour is linked to musculoskeletal disorders, cardiovascular 
+disease, and reduced productivity. By prompting movement every 30 minutes and 
+correcting posture in real time, the device directly reduces long-term health risks 
+for desk workers — reducing the burden on healthcare systems.
+
+### 🌡️ Environmental Comfort
+The MCP9808 temperature sensor monitors room conditions against the **ASHRAE 55-2023** 
+and **CIBSE Guide A** standard of 28°C maximum. Alerting users to overheating rooms 
+encourages ventilation and natural cooling over air conditioning — reducing energy 
+consumption.
+
+### ⚡ Low Power Design
+- Bare-metal firmware with **no RTOS overhead** — minimal CPU cycles wasted
+- Cooperative scheduler runs tasks only when needed
+- Sensors are read at low frequency (every 100–1000ms) to reduce I2C bus activity
+- Future improvement: STM32 **Stop mode** between task cycles could reduce power 
+  consumption by up to 90%
+
+### ♻️ Hardware Choices
+- All components are **low-cost, widely available, and repairable**
+- No proprietary connectors or single-use parts
+- The STM32 Nucleo board is **re-flashable and reusable** across projects
+- No battery required — powered via USB from an existing host machine
+
+---
 
 ## 📌 Pin Map
 
