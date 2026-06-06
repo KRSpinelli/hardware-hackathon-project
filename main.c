@@ -9,7 +9,7 @@
  *   Servo:  PC7 (D9) = TIM3_CH2 PWM 50Hz
  *   LEDs:   Green PB5 (D4), Yellow PA7 (D11), Red PB3 (D3)
  *   Button: PC13 (Nucleo blue user button, active LOW) — sets posture baseline
- *   Debug UART: USART2 PA2 (TX) -> ST-LINK VCP @115200
+ *   Debug UART: LPUART1 PA2 TX / PA3 RX (AF12) -> ST-LINK VCP @115200
  *
  * Posture flow:
  *   1. Clip MPU-6050 to body, press blue button → captures baseline orientation.
@@ -66,15 +66,21 @@ static void btn_init(void) {
     GPIOC->PUPDR |=  (1U << (BTN_PIN*2));   /* pull-up */
 }
 
-/* ---------- USART2 debug @115200 (16MHz) ---------- */
+/* ---------- LPUART1 debug @115200 (16MHz) ----------
+ * On Nucleo-G474RE the ST-LINK VCP is wired to LPUART1, not USART2.
+ * PA2 = LPUART1_TX (AF12), PA3 = LPUART1_RX (AF12).
+ * LPUART1 BRR = 256 * fclk / baud  (256x oversampling).
+ * Clock enable is in APB1ENR2 bit 0, not APB1ENR1. */
 static void uart_init(void) {
-    RCC->APB1ENR1 |= (1U<<17);
+    RCC->APB1ENR2 |= (1U<<0);            /* LPUART1EN */
     RCC->AHB2ENR  |= RCC_AHB2ENR_GPIOAEN;
-    gpio_mode(GPIOA, 2, 2); gpio_af(GPIOA, 2, 7);
-    USART2->BRR = 16000000UL / 115200UL;
-    USART2->CR1 = (1U<<3) | (1U<<0);
+    gpio_mode(GPIOA, 2, 2); gpio_af(GPIOA, 2, 12);  /* TX: PA2 AF12 */
+    gpio_mode(GPIOA, 3, 2); gpio_af(GPIOA, 3, 12);  /* RX: PA3 AF12 */
+    /* 256 * 16000000 / 115200 = 35556 */
+    LPUART1->BRR = (256UL * 16000000UL) / 115200UL;
+    LPUART1->CR1 = (1U<<3) | (1U<<2) | (1U<<0);     /* TE + RE + UE */
 }
-static void uart_putc(char c) { while(!(USART2->ISR & (1U<<7))); USART2->TDR = c; }
+static void uart_putc(char c) { while(!(LPUART1->ISR & (1U<<7))); LPUART1->TDR = c; }
 static void uart_print(const char *s) { while(*s) uart_putc(*s++); }
 
 /* ---------- I2C1 @100kHz ---------- */
