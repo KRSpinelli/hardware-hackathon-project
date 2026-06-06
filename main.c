@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include "stm32g474.h"
 #include "sched.h"
+#include "audio.h"
 
 /* ---------- pin helpers ---------- */
 static void gpio_mode(GPIO_TypeDef *p, int pin, int mode) {
@@ -362,6 +363,113 @@ static void task_debug(void) {
     uart_print("\r\n");
 }
 
+/* ================================================================
+ * Audio: DAC1 / TIM6 / DMA1-Ch3 — 8-bit unsigned PCM @ 8000 Hz
+ * PA4 = DAC1_OUT1 (analog mode, no AF needed).
+ * TIM6 update event → TRGO → DAC trigger → DMA transfer.
+ * DMA runs circular; task_audio stops it after clip duration elapses.
+ * ================================================================ */
+
+#define AUDIO_SAMPLE_RATE  8000UL
+#define AUDIO_COOLDOWN_MS  30000UL
+
+static const uint8_t  *const g_clips[]     = { audio_1, audio_2, audio_3 };
+
+static uint32_t g_clip_lens_rt[3];
+
+static volatile uint8_t  g_audio_idx      = 0;
+static volatile uint32_t g_audio_last_ms  = 0;
+static volatile uint32_t g_audio_clip_ms  = 0;
+static volatile int      g_audio_playing  = 0;
+
+static void audio_init(void) {
+    /* Clocks */
+    RCC->AHB1ENR  |= RCC_AHB1ENR_DMA1EN;    /* DMA1EN  (bit 0) */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_TIM6EN;   /* TIM6EN  (bit 4) */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_DAC1EN;   /* DAC1EN  (bit 29) */
+
+    /* PA4 → analog (MODER=11, no pull, no AF) */
+    GPIOA->MODER  |=  (3U << (4*2));
+    GPIOA->PUPDR  &= ~(3U << (4*2));
+
+    /* TIM6: PSC=0, ARR=1999 → 16MHz/2000 = 8kHz update, MMS=010 (TRGO on update) */
+    TIM6->PSC  = 0;
+    TIM6->ARR  = (uint32_t)(16000000UL / AUDIO_SAMPLE_RATE) - 1U;  /* 1999 */
+    TIM6->CR2  = TIM6_CR2_MMS_UPDATE;   /* MMS = 010 → TRGO on update */
+    TIM6->CR1  = TIM6_CR1_ARPE;         /* ARPE=1, CEN stays 0 */
+
+    /* DAC1: TEN1=1, TSEL1=0000 (TIM6 TRGO in G4 = 0b0000), DMAEN1=1, EN1=1 */
+    DAC1->CR = DAC_CR_EN1
+             | DAC_CR_TEN1
+             | DAC_CR_TSEL1_TIM6        /* TSEL1 = 0b0000 = TIM6_TRGO */
+             | DAC_CR_DMAEN1;
+
+    /* DMAMUX1 Ch2 (= DMA1 Ch3): request ID 6 = DAC1_CH1 */
+    DMAMUX1_Channel2->CCR = DMAMUX_DAC1_CH1_ID;
+
+    /* DMA1 Ch3: mem→periph, circular, 8-bit/8-bit, medium priority */
+    DMA1_Channel3->CPAR = (uint32_t)&DAC1->DHR8R1;
+    DMA1_Channel3->CCR  = DMA_CCR_DIR          /* mem→periph */
+                        | DMA_CCR_CIRC         /* circular   */
+                        | DMA_CCR_MINC         /* mem incr   */
+                        | DMA_CCR_PSIZE_8      /* periph 8-bit */
+                        | DMA_CCR_MSIZE_8      /* mem 8-bit  */
+                        | DMA_CCR_PL_MED;      /* priority medium */
+
+    /* Cache clip lengths */
+    g_clip_lens_rt[0] = audio_1_len;
+    g_clip_lens_rt[1] = audio_2_len;
+    g_clip_lens_rt[2] = audio_3_len;
+
+    /* Park DAC at mid-scale */
+    DAC1->DHR8R1 = 0x80U;
+}
+
+static void audio_play_next(void) {
+    uint8_t idx = g_audio_idx;
+
+    /* Stop any running transfer */
+    TIM6->CR1            &= ~TIM6_CR1_CEN;    /* CEN=0 */
+    DMA1_Channel3->CCR   &= ~DMA_CCR_EN;      /* EN=0  */
+    DMA1->IFCR            = DMA_IFCR_CGIF3;   /* clear all CH3 flags */
+
+    /* Point DMA at this clip */
+    DMA1_Channel3->CMAR  = (uint32_t)g_clips[idx];
+    DMA1_Channel3->CNDTR = g_clip_lens_rt[idx];
+
+    /* Record duration */
+    g_audio_clip_ms = (g_clip_lens_rt[idx] * 1000UL) / AUDIO_SAMPLE_RATE;
+
+    /* Advance index for next call */
+    g_audio_idx = (uint8_t)((idx + 1U) % 3U);
+
+    /* Start */
+    DMA1_Channel3->CCR |= DMA_CCR_EN;         /* EN=1  */
+    TIM6->CR1          |= TIM6_CR1_CEN;       /* CEN=1 */
+
+    g_audio_playing  = 1;
+    g_audio_last_ms  = millis();
+}
+
+static void audio_stop(void) {
+    TIM6->CR1          &= ~TIM6_CR1_CEN;      /* CEN=0 */
+    DMA1_Channel3->CCR &= ~DMA_CCR_EN;        /* EN=0  */
+    DAC1->DHR8R1        = 0x80U;              /* mid-scale, avoids pop */
+    g_audio_playing     = 0;
+}
+
+static void task_audio(void) {
+    int bad = (g_state == S_SLOUCH || g_state == S_TOO_LONG || g_state == S_HOT);
+    uint32_t now = millis();
+
+    if (bad && !g_audio_playing && (now - g_audio_last_ms) >= AUDIO_COOLDOWN_MS) {
+        audio_play_next();
+    }
+    if (g_audio_playing && (now - g_audio_last_ms) >= g_audio_clip_ms) {
+        audio_stop();
+    }
+}
+
 int main(void) {
     RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOBEN | RCC_AHB2ENR_GPIOCEN;
 
@@ -374,6 +482,7 @@ int main(void) {
     mpu_init();
     servo_init();
     hcsr04_init();
+    audio_init();
 
     uart_print("Smart Desk Coach online\r\n");
     uart_print("Clip MPU to body, then press blue button to set baseline.\r\n");
@@ -383,6 +492,7 @@ int main(void) {
     sched_add(task_temp,    2000, 1);
     sched_add(task_state,   100,  1);
     sched_add(task_debug,   500,  1);
+    sched_add(task_audio,   200,  1);
 
     sched_run();
     return 0;
