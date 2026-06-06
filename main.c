@@ -266,7 +266,7 @@ static volatile int      g_slouch    = 0;
 static volatile int      g_temp_dC   = 0;
 static volatile uint32_t g_seated_ms = 0;
 
-#define TOO_LONG_MS   1800000UL   /* 30 minutes */
+#define TOO_LONG_MS   25000UL     /* DEMO: 25s (prod = 1800000UL / 30 min) */
 #define HOT_THRESH_dC 280         /* 28.0°C */
 
 /* ---------- TASK: button edge detect → capture baseline (every 50ms) ---------- */
@@ -371,13 +371,12 @@ static void task_debug(void) {
  * ================================================================ */
 
 #define AUDIO_SAMPLE_RATE  8000UL
-#define AUDIO_COOLDOWN_MS  30000UL
+#define AUDIO_COOLDOWN_MS  10000UL   /* DEMO: 10s between repeats */
 
 static const uint8_t  *const g_clips[]     = { audio_1, audio_2, audio_3 };
 
 static uint32_t g_clip_lens_rt[3];
 
-static volatile uint8_t  g_audio_idx      = 0;
 static volatile uint32_t g_audio_last_ms  = 0;
 static volatile uint32_t g_audio_clip_ms  = 0;
 static volatile int      g_audio_playing  = 0;
@@ -425,9 +424,10 @@ static void audio_init(void) {
     DAC1->DHR8R1 = 0x80U;
 }
 
-static void audio_play_next(void) {
-    uint8_t idx = g_audio_idx;
+/* 3 min of unheeded nagging (slouch/too-long) → "put your phone down" */
+#define PHONE_ESCALATE_MS  40000UL   /* DEMO: 40s (prod = 180000UL / 3 min) */
 
+static void audio_play_clip(uint8_t idx) {
     /* Stop any running transfer */
     TIM6->CR1            &= ~TIM6_CR1_CEN;    /* CEN=0 */
     DMA1_Channel3->CCR   &= ~DMA_CCR_EN;      /* EN=0  */
@@ -439,9 +439,6 @@ static void audio_play_next(void) {
 
     /* Record duration */
     g_audio_clip_ms = (g_clip_lens_rt[idx] * 1000UL) / AUDIO_SAMPLE_RATE;
-
-    /* Advance index for next call */
-    g_audio_idx = (uint8_t)((idx + 1U) % 3U);
 
     /* Start */
     DMA1_Channel3->CCR |= DMA_CCR_EN;         /* EN=1  */
@@ -459,14 +456,25 @@ static void audio_stop(void) {
 }
 
 static void task_audio(void) {
-    int bad = (g_state == S_SLOUCH || g_state == S_TOO_LONG || g_state == S_HOT);
     uint32_t now = millis();
+    static state_t prev = S_GOOD;
+    static uint32_t alert_since = 0;
+    if (g_state != prev) { alert_since = now; prev = g_state; }   /* reset nag clock on change */
 
-    if (bad && !g_audio_playing && (now - g_audio_last_ms) >= AUDIO_COOLDOWN_MS) {
-        audio_play_next();
-    }
+    /* End the clip once its duration has elapsed */
     if (g_audio_playing && (now - g_audio_last_ms) >= g_audio_clip_ms) {
         audio_stop();
+    }
+
+    /* Pick clip by problem: slouch→straighten, too-long→break, sustained→phone */
+    int clip = -1;
+    if (g_state == S_SLOUCH)        clip = 0;   /* "straighten up"      */
+    else if (g_state == S_TOO_LONG) clip = 1;   /* break time           */
+    if ((g_state == S_SLOUCH || g_state == S_TOO_LONG) &&
+        (now - alert_since) > PHONE_ESCALATE_MS) clip = 2;   /* "put your phone down" */
+
+    if (clip >= 0 && !g_audio_playing && (now - g_audio_last_ms) >= AUDIO_COOLDOWN_MS) {
+        audio_play_clip((uint8_t)clip);
     }
 }
 
